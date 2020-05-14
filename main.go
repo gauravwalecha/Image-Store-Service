@@ -2,182 +2,138 @@ package main
 
 import (
 	"domain"
-	"encoding/json"
 	"fmt"
-	"io"
-	"io/ioutil"
-	"log"
+	"methods"
 	"net/http"
-	"net/url"
-	"os"
-	"strings"
-)
+	"path"
 
-var (
-	fileName    string
-	fullURLFile string
+	"github.com/emicklei/go-restful"
+	restfulspec "github.com/emicklei/go-restful-openapi"
+	"github.com/go-openapi/spec"
 )
 
 func main() {
-	fmt.Println("Starting on 8080...")
-	http.HandleFunc("/createAlbum", createAlbum)
-	http.HandleFunc("/deleteAlbum", deleteAlbum)
-	http.HandleFunc("/createImage", createImage)
-	http.HandleFunc("/deleteImage", deleteImage)
-	http.HandleFunc("/getAllImages", getAllImages)
-	http.ListenAndServe(":8080", nil)
+	wsContainer := restful.NewContainer()
+	RegisterCreateAlbum(wsContainer)
+	RegisterDeleteAlbum(wsContainer)
+	RegisterCreateImage(wsContainer)
+	RegisterDeleteImage(wsContainer)
+	RegisterGetAllImages(wsContainer)
+	RegisterOpenAPI(wsContainer)
+	RegisterSwaggerUI(wsContainer)
+	fmt.Println("Starting the server on port 8080.....")
+	server := &http.Server{Addr: ":8080", Handler: wsContainer}
+	fmt.Println(server.ListenAndServe())
 }
 
-func deleteAlbum(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("Deleting Public Folder of Album...")
-	os.RemoveAll("./public")
+// RegisterSwaggerUI - Register route for swagger
+func RegisterSwaggerUI(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Route(ws.GET("/swagger").To(swaggerUIPart1))
+	container.Add(ws)
 }
 
-func createAlbum(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("Creating Public Folder of Album...")
-	_, err := os.Stat("public")
-
-	if os.IsNotExist(err) {
-		errDir := os.MkdirAll("public/pics", 0755)
-		if errDir != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("Created Public Folder of Album..")
-	} else {
-		fmt.Println("Public Folder of Album already present..")
-	}
+// swaggerUiPart1 - function for accessing static files
+func swaggerUIPart1(req *restful.Request, resp *restful.Response) {
+	http.ServeFile(
+		resp.ResponseWriter,
+		req.Request,
+		path.Join("./src/resources/swagger-ui/", ""))
 }
 
-func createImage(w http.ResponseWriter, req *http.Request) {
-	_, err := os.Stat("public")
-	if os.IsNotExist(err) {
-		fmt.Println("Sorry, Album is not present. Kindly make Album first...")
-		return
-	}
-	decoder := json.NewDecoder(req.Body)
-
-	addImage := domain.Image{}
-	err = decoder.Decode(&addImage)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Adding Image into the Album...")
-	directory, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fullURLFile = addImage.PathOfImage
-	buildFileName()
-
-	file, err := os.Create(directory + "/public/pics/" + fileName)
-	if err != nil {
-		panic(err)
-	}
-
-	putFile(file, httpClient())
+// RegisterOpenAPI - Registering routes for OpenApi
+func RegisterOpenAPI(container *restful.Container) {
+	config := restfulspec.Config{
+		WebServices:                   container.RegisteredWebServices(),
+		APIPath:                       "/apidocs.json",
+		PostBuildSwaggerObjectHandler: enrichSwaggerObject}
+	container.Add(restfulspec.NewOpenAPIService(config))
 }
 
-func putFile(file *os.File, client *http.Client) {
-	resp, err := client.Get(fullURLFile)
-	if err != nil {
-		panic(err)
-	}
-	defer resp.Body.Close()
-	_, err = io.Copy(file, resp.Body)
-	defer file.Close()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Just Downloaded a file" + fileName)
-}
-
-func buildFileName() {
-	fileURL, err := url.Parse(fullURLFile)
-	fmt.Println(fileURL)
-	if err != nil {
-		panic(err)
-	}
-	path := fileURL.Path
-	fmt.Println(path)
-	segments := strings.Split(path, "/")
-	fmt.Println(segments)
-	fmt.Println(len(segments))
-	fileName = segments[len(segments)-1]
-	fmt.Println(fileName)
-}
-
-// to omit leading slashes
-func httpClient() *http.Client {
-	client := http.Client{
-		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			r.URL.Opaque = r.URL.Path
-			return nil
+//function for swagger details
+func enrichSwaggerObject(swo *spec.Swagger) {
+	swo.Info = &spec.Info{
+		InfoProps: spec.InfoProps{
+			Title:       "Image Store Service",
+			Description: "Storing Images to Album",
 		},
 	}
-
-	return &client
+	swo.Tags = []spec.Tag{spec.Tag{TagProps: spec.TagProps{
+		Name:        "Image Store Service",
+		Description: "backend for Image Store Service Application"}}}
 }
 
-func deleteImage(w http.ResponseWriter, req *http.Request) {
-	_, err := os.Stat("public")
-	if os.IsNotExist(err) {
-		fmt.Println("Sorry, Album is not present. Kindly make Album first and insert some Images...")
-		return
-	}
-	fmt.Println("Deleting Image from Album...")
-	decoder := json.NewDecoder(req.Body)
-
-	imageName := domain.ImageName{}
-	err = decoder.Decode(&imageName)
-	if err != nil {
-		panic(err)
-	}
-
-	directory, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = os.Remove(directory + "/public/pics/" + imageName.Name)
-
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println("Image " + imageName.Name + " successfully deleted")
+// RegisterCreateAlbum -
+func RegisterCreateAlbum(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Path("/createAlbum")
+	ws.Route(ws.POST("").
+		Doc("Creates the Photo Album.").
+		Returns(200, "ok", "success").
+		Returns(501, "Internal Server Error", nil).
+		Returns(405, "Method Not Allowed", nil).
+		Produces(restful.MIME_JSON).
+		To(methods.CreateAlbum))
+	container.Add(ws)
 }
 
-func fileExists(filename string) bool {
-	_, err := os.Stat("public/pics/" + filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return true
+// RegisterDeleteAlbum -
+func RegisterDeleteAlbum(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Path("/deleteAlbum")
+	ws.Route(ws.DELETE("").
+		Doc("Deletes the Photo Album.").
+		Returns(200, "ok", "success").
+		Returns(501, "Internal Server Error", nil).
+		Returns(405, "Method Not Allowed", nil).
+		Produces(restful.MIME_JSON).
+		To(methods.DeleteAlbum))
+	container.Add(ws)
 }
 
-func getAllImages(w http.ResponseWriter, req *http.Request) {
+// RegisterCreateImage -
+func RegisterCreateImage(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Path("/createImage")
+	ws.Route(ws.POST("").
+		Doc("Creates the Image into Photo Album.").
+		Reads(domain.Image{}).
+		Returns(200, "ok", "success").
+		Returns(501, "Internal Server Error", nil).
+		Returns(405, "Method Not Allowed", nil).
+		Consumes(restful.MIME_JSON).
+		Produces(restful.MIME_JSON).
+		To(methods.CreateImage))
+	container.Add(ws)
+}
 
-	_, err := os.Stat("public")
-	if os.IsNotExist(err) {
-		fmt.Println("Sorry, Album is not present. Kindly make Album first...")
-		return
-	}
-	directory, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	files, err := ioutil.ReadDir(directory + "/public/pics")
-	if err != nil {
-		log.Fatal(err)
-	}
-	flag := 0
-	fmt.Println("Images Stored in Album are: ")
-	for _, file := range files {
-		flag = 1
-		fmt.Println(file.Name())
-	}
-	if flag == 0 {
-		fmt.Println("Album is Empty.")
-	}
+// RegisterDeleteImage -
+func RegisterDeleteImage(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Path("/deleteImage")
+	ws.Route(ws.DELETE("").
+		Doc("Creates the Image in Photo Album.").
+		Reads(domain.ImageName{}).
+		Returns(200, "ok", "success").
+		Returns(501, "Internal Server Error", nil).
+		Returns(405, "Method Not Allowed", nil).
+		Consumes(restful.MIME_JSON).
+		Produces(restful.MIME_JSON).
+		To(methods.DeleteImage))
+	container.Add(ws)
+}
 
+// RegisterGetAllImages -
+func RegisterGetAllImages(container *restful.Container) {
+	ws := new(restful.WebService)
+	ws.Path("/getAllImages")
+	ws.Route(ws.GET("").
+		Doc("Creates the Image in Photo Album.").
+		Returns(200, "ok", "success").
+		Returns(501, "Internal Server Error", nil).
+		Returns(405, "Method Not Allowed", nil).
+		Consumes(restful.MIME_JSON).
+		Produces(restful.MIME_JSON).
+		To(methods.GetAllImages))
+	container.Add(ws)
 }
